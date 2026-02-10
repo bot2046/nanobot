@@ -46,7 +46,7 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
-        context_config: "ContextConfig" | None = None,
+        context_config: "ContextConfig | None" = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
