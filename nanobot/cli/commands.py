@@ -574,24 +574,6 @@ def channels_status():
         dc.gateway_url
     )
 
-    # Feishu
-    fs = config.channels.feishu
-    fs_config = f"app_id: {fs.app_id[:10]}..." if fs.app_id else "[dim]not configured[/dim]"
-    table.add_row(
-        "Feishu",
-        "✓" if fs.enabled else "✗",
-        fs_config
-    )
-
-    # Mochat
-    mc = config.channels.mochat
-    mc_base = mc.base_url or "[dim]not configured[/dim]"
-    table.add_row(
-        "Mochat",
-        "✓" if mc.enabled else "✗",
-        mc_base
-    )
-    
     # Telegram
     tg = config.channels.telegram
     tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
@@ -608,6 +590,54 @@ def channels_status():
         "Slack",
         "✓" if slack.enabled else "✗",
         slack_config
+    )
+
+    # Feishu
+    feishu = config.channels.feishu
+    if feishu.app_id and feishu.app_secret:
+        feishu_config = f"app_id: {feishu.app_id[:10]}..."
+    else:
+        feishu_config = "[dim]not configured[/dim]"
+    table.add_row(
+        "Feishu",
+        "✓" if feishu.enabled else "✗",
+        feishu_config
+    )
+
+    # DingTalk
+    dingtalk = config.channels.dingtalk
+    dingtalk_config = "configured" if dingtalk.client_id and dingtalk.client_secret else "[dim]not configured[/dim]"
+    table.add_row(
+        "DingTalk",
+        "✓" if dingtalk.enabled else "✗",
+        dingtalk_config
+    )
+
+    # Email
+    email = config.channels.email
+    email_config = "configured" if email.imap_host and email.smtp_host else "[dim]not configured[/dim]"
+    table.add_row(
+        "Email",
+        "✓" if email.enabled else "✗",
+        email_config
+    )
+
+    # Mochat
+    mc = config.channels.mochat
+    mc_base = mc.base_url or "[dim]not configured[/dim]"
+    table.add_row(
+        "Mochat",
+        "✓" if mc.enabled else "✗",
+        mc_base
+    )
+
+    # QQ
+    qq = config.channels.qq
+    qq_config = "configured" if qq.app_id and qq.secret else "[dim]not configured[/dim]"
+    table.add_row(
+        "QQ",
+        "✓" if qq.enabled else "✗",
+        qq_config
     )
 
     console.print(table)
