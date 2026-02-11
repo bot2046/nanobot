@@ -24,5 +24,6 @@ poetry.lock
 .pytest_cache/
 tests/
 botpy.log
-
 .worktrees
+uv.lock
+.vscode/
