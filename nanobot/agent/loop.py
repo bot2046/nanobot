@@ -1,6 +1,7 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import inspect
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -144,6 +145,8 @@ class AgentLoop:
                         await self.bus.publish_outbound(response)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
+                    if msg.stream_id:
+                        self.bus.mark_stream_done(msg.stream_id)
                     # Send error response
                     await self.bus.publish_outbound(
                         OutboundMessage(
@@ -159,6 +162,23 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    def _build_messages_with_context(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Call context builder with only supported kwargs for compatibility."""
+        build_messages = self.context.build_messages
+        try:
+            sig = inspect.signature(build_messages)
+        except (TypeError, ValueError):
+            return build_messages(**kwargs)
+
+        if any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in sig.parameters.values()
+        ):
+            return build_messages(**kwargs)
+
+        filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
+        return build_messages(**filtered)
 
     async def _process_message(
         self, msg: InboundMessage, stream_callback: Callable[[str], Any] | None = None
@@ -197,7 +217,7 @@ class AgentLoop:
             cron_tool.set_context(msg.channel, msg.chat_id)
 
         # Build initial messages (use get_history for LLM-formatted messages)
-        messages = self.context.build_messages(
+        messages = self._build_messages_with_context(
             history=session.get_history(),
             current_message=msg.content,
             media=msg.media if msg.media else None,
@@ -350,7 +370,7 @@ class AgentLoop:
             cron_tool.set_context(origin_channel, origin_chat_id)
 
         # Build messages with the announce content
-        messages = self.context.build_messages(
+        messages = self._build_messages_with_context(
             history=session.get_history(),
             current_message=msg.content,
             channel=origin_channel,

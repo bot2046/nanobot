@@ -40,6 +40,8 @@ class ContextBuilderProtocol(Protocol):
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        sender_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call.
 
@@ -50,6 +52,8 @@ class ContextBuilderProtocol(Protocol):
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            sender_id: ID of the message sender.
+            metadata: Additional metadata associated with the message.
 
         Returns:
             List of messages including system prompt.
@@ -172,4 +176,3 @@ class ContextBuilderFactory:
         from nanobot.agent.context import ContextBuilder
 
         return ContextBuilder
-
