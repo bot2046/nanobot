@@ -471,12 +471,12 @@ class FeishuChannel(BaseChannel):
             msg_type = message.message_type
             
             # Add reaction to indicate "seen"
-            await self._add_reaction(message_id, "THUMBSUP")
+            if self.config.reaction_emoji:
+                await self._add_reaction(message_id, self.config.reaction_emoji)
 
             # Parse message content and handle media
             content_parts = []
             media_paths = []
-
             if msg_type == "text":
                 try:
                     content = json.loads(message.content).get("text", "")
