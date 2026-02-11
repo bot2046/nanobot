@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import mimetypes
 import re
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
@@ -65,6 +68,8 @@ class FeishuChannel(BaseChannel):
         self._ws_thread: threading.Thread | None = None
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._tenant_access_token: str | None = None
+        self._token_expire_at: float = 0.0
 
     @staticmethod
     def _extract_explicit_attachments(text: str) -> tuple[str, list[str]]:
@@ -81,6 +86,103 @@ class FeishuChannel(BaseChannel):
         cleaned = _MD_IMAGE_RE.sub(replace_md, text)
         cleaned = _FILE_URI_RE.sub(replace_file, cleaned)
         return cleaned.strip(), attachments
+
+    @staticmethod
+    def _normalize_attachment_paths(paths: list[str]) -> list[Path]:
+        normalized: list[Path] = []
+        seen: set[str] = set()
+        for raw in paths:
+            if not isinstance(raw, str) or raw in seen:
+                continue
+            seen.add(raw)
+            path = Path(raw)
+            if path.is_absolute() and path.is_file():
+                normalized.append(path)
+        return normalized
+
+    async def _get_tenant_access_token(self) -> str | None:
+        now = time.time()
+        if self._tenant_access_token and now < self._token_expire_at:
+            return self._tenant_access_token
+
+        token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        payload = {
+            "app_id": self.config.app_id,
+            "app_secret": self.config.app_secret,
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(token_url, json=payload)
+            if response.status_code != 200:
+                logger.error(f"Failed to get access token: status {response.status_code}")
+                return None
+            data = response.json()
+            if data.get("code") != 0:
+                logger.error(f"Failed to get access token: {data.get('msg')}")
+                return None
+            token = data.get("tenant_access_token")
+            expire = data.get("expire", 0)
+            if not token:
+                logger.error("Failed to get access token: missing token")
+                return None
+            # refresh slightly early
+            self._tenant_access_token = token
+            self._token_expire_at = now + max(0, int(expire) - 60)
+            return token
+
+    async def _upload_image_http(self, path: Path) -> str | None:
+        token = await self._get_tenant_access_token()
+        if not token:
+            return None
+
+        api_url = "https://open.feishu.cn/open-apis/im/v1/images"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            with path.open("rb") as f:
+                files = {"image": (path.name, f)}
+                data = {"image_type": "message"}
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(api_url, headers=headers, data=data, files=files)
+            if response.status_code != 200:
+                logger.warning(
+                    f"Image upload failed: status={response.status_code}, body={response.text[:500]}"
+                )
+                return None
+            payload = response.json()
+            if payload.get("code") != 0:
+                logger.warning(f"Image upload error: {payload.get('msg')}")
+                return None
+            return payload.get("data", {}).get("image_key")
+        except Exception as e:
+            logger.error(f"Image upload error: {e}")
+            return None
+
+    async def _upload_file_http(self, path: Path) -> str | None:
+        token = await self._get_tenant_access_token()
+        if not token:
+            return None
+
+        api_url = "https://open.feishu.cn/open-apis/im/v1/files"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            with path.open("rb") as f:
+                files = {"file": (path.name, f)}
+                data = {"file_type": "stream", "file_name": path.name}
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(api_url, headers=headers, data=data, files=files)
+            if response.status_code != 200:
+                logger.warning(
+                    f"File upload failed: status={response.status_code}, body={response.text[:500]}"
+                )
+                return None
+            payload = response.json()
+            if payload.get("code") != 0:
+                logger.warning(f"File upload error: {payload.get('msg')}")
+                return None
+            return payload.get("data", {}).get("file_key")
+        except Exception as e:
+            logger.error(f"File upload error: {e}")
+            return None
     
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
@@ -189,9 +291,10 @@ class FeishuChannel(BaseChannel):
         lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
         if len(lines) < 3:
             return None
-        split = lambda l: [c.strip() for c in l.strip("|").split("|")]
-        headers = split(lines[0])
-        rows = [split(l) for l in lines[2:]]
+        def split_row(row: str) -> list[str]:
+            return [c.strip() for c in row.strip("|").split("|")]
+        headers = split_row(lines[0])
+        rows = [split_row(row) for row in lines[2:]]
         columns = [{"tag": "column", "name": f"c{i}", "display_name": h, "width": "auto"}
                    for i, h in enumerate(headers)]
         return {
@@ -215,6 +318,45 @@ class FeishuChannel(BaseChannel):
             elements.append({"tag": "markdown", "content": remaining})
         return elements or [{"tag": "markdown", "content": content}]
 
+    @staticmethod
+    def _guess_is_image(path: Path) -> bool:
+        mime, _ = mimetypes.guess_type(path.as_posix())
+        return bool(mime and mime.startswith("image/"))
+
+    async def _send_image(self, receive_id_type: str, receive_id: str, image_key: str) -> None:
+        request = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type("image")
+                .content(json.dumps({"image_key": image_key}))
+                .build()
+            ).build()
+        response = self._client.im.v1.message.create(request)
+        if not response.success():
+            logger.warning(
+                f"Failed to send Feishu image: code={response.code}, msg={response.msg}, "
+                f"log_id={response.get_log_id()}"
+            )
+
+    async def _send_file(self, receive_id_type: str, receive_id: str, file_key: str) -> None:
+        request = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type("file")
+                .content(json.dumps({"file_key": file_key}))
+                .build()
+            ).build()
+        response = self._client.im.v1.message.create(request)
+        if not response.success():
+            logger.warning(
+                f"Failed to send Feishu file: code={response.code}, msg={response.msg}, "
+                f"log_id={response.get_log_id()}"
+            )
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Feishu."""
         if not self._client:
@@ -229,34 +371,67 @@ class FeishuChannel(BaseChannel):
             else:
                 receive_id_type = "open_id"
             
-            # Build card with markdown + table support
-            elements = self._build_card_elements(msg.content)
-            card = {
-                "config": {"wide_screen_mode": True},
-                "elements": elements,
-            }
-            content = json.dumps(card, ensure_ascii=False)
-            
-            request = CreateMessageRequest.builder() \
-                .receive_id_type(receive_id_type) \
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(msg.chat_id)
-                    .msg_type("interactive")
-                    .content(content)
-                    .build()
-                ).build()
-            
-            response = self._client.im.v1.message.create(request)
-            
-            if not response.success():
-                logger.error(
-                    f"Failed to send Feishu message: code={response.code}, "
-                    f"msg={response.msg}, log_id={response.get_log_id()}"
-                )
-            else:
-                logger.debug(f"Feishu message sent to {msg.chat_id}")
-                
+            cleaned_text, extracted = self._extract_explicit_attachments(msg.content)
+            attachments = []
+            if msg.media:
+                attachments.extend(msg.media)
+            if extracted:
+                attachments.extend(extracted)
+
+            normalized = self._normalize_attachment_paths(attachments)
+
+            if cleaned_text.strip():
+                elements = self._build_card_elements(cleaned_text)
+                card = {
+                    "config": {"wide_screen_mode": True},
+                    "elements": elements,
+                }
+                content = json.dumps(card, ensure_ascii=False)
+
+                request = CreateMessageRequest.builder() \
+                    .receive_id_type(receive_id_type) \
+                    .request_body(
+                        CreateMessageRequestBody.builder()
+                        .receive_id(msg.chat_id)
+                        .msg_type("interactive")
+                        .content(content)
+                        .build()
+                    ).build()
+
+                response = self._client.im.v1.message.create(request)
+
+                if not response.success():
+                    logger.error(
+                        f"Failed to send Feishu message: code={response.code}, "
+                        f"msg={response.msg}, log_id={response.get_log_id()}"
+                    )
+                else:
+                    logger.debug(f"Feishu message sent to {msg.chat_id}")
+
+            for path in normalized:
+                try:
+                    size = path.stat().st_size
+                    if self._guess_is_image(path):
+                        if size > 10 * 1024 * 1024:
+                            logger.warning(f"Image too large (>10MB): {path}")
+                            continue
+                        image_key = await self._upload_image_http(path)
+                        if image_key:
+                            await self._send_image(receive_id_type, msg.chat_id, image_key)
+                        else:
+                            logger.warning(f"Image upload failed: {path}")
+                    else:
+                        if size > 30 * 1024 * 1024:
+                            logger.warning(f"File too large (>30MB): {path}")
+                            continue
+                        file_key = await self._upload_file_http(path)
+                        if file_key:
+                            await self._send_file(receive_id_type, msg.chat_id, file_key)
+                        else:
+                            logger.warning(f"File upload failed: {path}")
+                except Exception as e:
+                    logger.error(f"Error sending attachment {path}: {e}")
+
         except Exception as e:
             logger.error(f"Error sending Feishu message: {e}")
     
