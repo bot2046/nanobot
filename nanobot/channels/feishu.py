@@ -5,6 +5,7 @@ import json
 import re
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -38,6 +39,9 @@ MSG_TYPE_MAP = {
     "sticker": "[sticker]",
 }
 
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((/[^)\s]+)\)")
+_FILE_URI_RE = re.compile(r"\bfile:(/[^\s]+)")
+
 
 class FeishuChannel(BaseChannel):
     """
@@ -61,6 +65,22 @@ class FeishuChannel(BaseChannel):
         self._ws_thread: threading.Thread | None = None
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    @staticmethod
+    def _extract_explicit_attachments(text: str) -> tuple[str, list[str]]:
+        attachments: list[str] = []
+
+        def replace_md(match: re.Match[str]) -> str:
+            attachments.append(match.group(1))
+            return ""
+
+        def replace_file(match: re.Match[str]) -> str:
+            attachments.append(match.group(1))
+            return ""
+
+        cleaned = _MD_IMAGE_RE.sub(replace_md, text)
+        cleaned = _FILE_URI_RE.sub(replace_file, cleaned)
+        return cleaned.strip(), attachments
     
     async def start(self) -> None:
         """Start the Feishu bot with WebSocket long connection."""
