@@ -227,6 +227,11 @@ class ToolsConfig(BaseModel):
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
+class ContextConfig(BaseModel):
+    """Context configuration."""
+    context_plugin_package: str = "nanobot.agent.context"
+    context_plugin_class: str = "ContextBuilder"
+    context_plugin_config: dict[str, str] | None = None
 
 class Config(BaseSettings):
     """Root configuration for nanobot."""
@@ -236,7 +241,8 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    
+    context: ContextConfig = Field(default_factory=ContextConfig)
+
     @property
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
