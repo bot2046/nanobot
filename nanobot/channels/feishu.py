@@ -272,7 +272,14 @@ class FeishuChannel(BaseChannel):
 
     name = "feishu"
 
-    def __init__(self, config: FeishuConfig, bus: MessageBus):
+    def __init__(
+        self,
+        config: FeishuConfig,
+        bus: MessageBus,
+        *,
+        attachment_base_dir: Path | None = None,
+        attachment_allowed_dir: Path | None = None,
+    ):
         super().__init__(config, bus)
         self.config: FeishuConfig = config
         self._client: Any = None
@@ -281,6 +288,8 @@ class FeishuChannel(BaseChannel):
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()  # Ordered dedup cache
         self._loop: asyncio.AbstractEventLoop | None = None
         self._markdown_converter: FeishuMarkdownConverter | None = None
+        self._attachment_base_dir = attachment_base_dir
+        self._attachment_allowed_dir = attachment_allowed_dir
         if self.config.render_markdown:
             self._markdown_converter = FeishuMarkdownConverter()
         self._tenant_access_token: str | None = None
@@ -303,16 +312,26 @@ class FeishuChannel(BaseChannel):
         return cleaned.strip(), attachments
 
     @staticmethod
-    def _normalize_attachment_paths(paths: list[str]) -> list[Path]:
+    def _normalize_attachment_paths(
+        paths: list[str],
+        base_dir: Path | None = None,
+        allowed_dir: Path | None = None,
+    ) -> list[Path]:
         normalized: list[Path] = []
         seen: set[str] = set()
+        base = (base_dir or allowed_dir or Path.cwd()).expanduser().resolve()
+        allowed_root = allowed_dir.expanduser().resolve() if allowed_dir else None
         for raw in paths:
             if not isinstance(raw, str) or raw in seen:
                 continue
             seen.add(raw)
-            path = Path(raw)
-            if path.is_absolute() and path.is_file():
-                normalized.append(path)
+            path = Path(raw).expanduser()
+            resolved = path if path.is_absolute() else base / path
+            resolved = resolved.resolve()
+            if allowed_root and not resolved.is_relative_to(allowed_root):
+                continue
+            if resolved.is_file():
+                normalized.append(resolved)
         return normalized
 
     async def _get_tenant_access_token(self) -> str | None:
@@ -744,7 +763,11 @@ class FeishuChannel(BaseChannel):
             if extracted:
                 attachments.extend(extracted)
 
-            normalized = self._normalize_attachment_paths(attachments)
+            normalized = self._normalize_attachment_paths(
+                attachments,
+                base_dir=self._attachment_base_dir,
+                allowed_dir=self._attachment_allowed_dir,
+            )
 
             if cleaned_text.strip():
                 msg_type = "text"
