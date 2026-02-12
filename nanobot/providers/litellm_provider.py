@@ -45,6 +45,9 @@ class LiteLLMProvider(LLMProvider):
         if api_base:
             litellm.api_base = api_base
 
+        # Prefer httpx transport to avoid aiohttp session leaks in long-running processes.
+        litellm.disable_aiohttp_transport = True
+
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
         # Drop unsupported parameters for providers (e.g., gpt-5 rejects some params)
