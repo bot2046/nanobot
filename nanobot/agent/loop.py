@@ -145,8 +145,6 @@ class AgentLoop:
                         await self.bus.publish_outbound(response)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
-                    if msg.stream_id:
-                        self.bus.mark_stream_done(msg.stream_id)
                     # Send error response
                     await self.bus.publish_outbound(
                         OutboundMessage(
@@ -155,6 +153,9 @@ class AgentLoop:
                             content=f"Sorry, I encountered an error: {str(e)}",
                         )
                     )
+                finally:
+                    if msg.stream_id:
+                        self.bus.mark_stream_done(msg.stream_id)
             except asyncio.TimeoutError:
                 continue
 
@@ -230,6 +231,7 @@ class AgentLoop:
         # Agent loop
         iteration = 0
         final_content = None
+        stream_separator_sent = False
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -297,6 +299,16 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                # Insert a separator between the initial plan text and final results in streaming mode.
+                if (
+                    stream_callback
+                    and not stream_separator_sent
+                    and full_content.strip()
+                ):
+                    res = stream_callback("\n\n---\n\n")
+                    if asyncio.iscoroutine(res):
+                        await res
+                    stream_separator_sent = True
             else:
                 # No tool calls, we're done
                 final_content = response.content

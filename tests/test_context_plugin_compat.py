@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ExecToolConfig
 
@@ -117,6 +117,44 @@ async def test_run_marks_stream_done_on_error(tmp_path: Path) -> None:
     agent._process_message = boom  # type: ignore[assignment]
 
     stream_id = "stream-1"
+    bus.register_stream_callback(stream_id, lambda chunk: None)
+
+    task = asyncio.create_task(agent.run())
+    await bus.publish_inbound(
+        InboundMessage(
+            channel="feishu",
+            sender_id="user",
+            chat_id="oc_1",
+            content="hi",
+            stream_id=stream_id,
+        )
+    )
+
+    done = await bus.wait_stream_done(stream_id, timeout=1)
+    agent.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert done is True
+
+
+@pytest.mark.asyncio
+async def test_run_marks_stream_done_when_process_message_returns(tmp_path: Path) -> None:
+    bus = MessageBus()
+    agent = AgentLoop(
+        bus=bus,
+        provider=DummyProvider(),
+        workspace=tmp_path,
+        model="dummy",
+        exec_config=ExecToolConfig(),
+        session_manager=DummySessionManager(),
+    )
+
+    async def ok(msg: InboundMessage, stream_callback=None):
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="ok")
+
+    agent._process_message = ok  # type: ignore[assignment]
+
+    stream_id = "stream-2"
     bus.register_stream_callback(stream_id, lambda chunk: None)
 
     task = asyncio.create_task(agent.run())
