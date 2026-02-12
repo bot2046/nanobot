@@ -185,6 +185,14 @@ class AgentLoop:
         filtered = {key: value for key, value in kwargs.items() if key in sig.parameters}
         return build_messages(**filtered)
 
+    def _provider_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        return kwargs
+
     async def _process_message(
         self, msg: InboundMessage, stream_callback: Callable[[str], Any] | None = None
     ) -> OutboundMessage | None:
@@ -250,8 +258,7 @@ class AgentLoop:
                     messages=messages,
                     tools=self.tools.get_definitions(),
                     model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
+                    **self._provider_kwargs(),
                 ):
                     if chunk.content:
                         full_content += chunk.content
@@ -274,8 +281,7 @@ class AgentLoop:
                     messages=messages,
                     tools=self.tools.get_definitions(),
                     model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
+                    **self._provider_kwargs(),
                 )
             # Handle tool calls
             if response.has_tool_calls:
@@ -418,8 +424,7 @@ class AgentLoop:
                 messages=messages,
                 tools=self.tools.get_definitions(),
                 model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
+                **self._provider_kwargs(),
             )
 
             if response.has_tool_calls:
