@@ -244,11 +244,15 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         self.sessions.save(session)
         
+        # Mark this as the final/complete response
+        metadata = msg.metadata or {}
+        metadata["is_complete"] = True
+        
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
-            metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+            metadata=metadata,  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
     
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
